@@ -1,0 +1,11 @@
+services:
+  matsedel:
+    build: .
+    ports:
+      - "8090:8090"
+    volumes:
+      - matsedel_data:/app/pb_data
+    restart: unless-stopped
+
+volumes:
+  matsedel_data:
