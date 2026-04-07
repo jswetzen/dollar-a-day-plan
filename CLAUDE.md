@@ -6,11 +6,13 @@ The app lives at `matsedel/` and is served at **http://192.168.1.164:8090**.
 
 ### Rebuild & Deploy
 
-Touching `matsedel/restart.txt` triggers an **automatic no-cache rebuild and redeploy** (takes ~17 seconds):
+Writing new content to `matsedel/restart.txt` triggers an **automatic no-cache rebuild and redeploy** (takes ~40 seconds). Use `date` to ensure the content actually changes:
 
 ```bash
-touch matsedel/restart.txt
+date > matsedel/restart.txt
 ```
+
+`touch` alone does **not** work — the watcher checks file content, not mtime.
 
 This is the standard way to deploy any change to the frontend or Dockerfile.
 
@@ -19,12 +21,10 @@ This is the standard way to deploy any change to the frontend or Dockerfile.
 After touching `restart.txt`, check the build log to confirm the new image was built and the app is up:
 
 ```bash
-# Wait ~20s, then:
+# Wait ~40s, then:
 curl -s http://192.168.1.164:8090   # should return 200
-cat matsedel/build.log | tail -20   # should show no errors and the final container ID
+tail -20 matsedel/build.log         # should show "Successfully tagged" and the final container ID
 ```
-
-If the build log shows `Using cache` for all steps, the rebuild didn't pick up changes — this should no longer happen since the trigger uses `--no-cache`.
 
 ### Lidl CSV Import
 

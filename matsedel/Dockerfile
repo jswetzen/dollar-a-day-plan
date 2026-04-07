@@ -10,9 +10,7 @@ COPY frontend/package.json frontend/pnpm-lock.yaml* ./
 RUN pnpm install --frozen-lockfile || pnpm install
 
 COPY frontend/ ./
-COPY lidl_items.csv /build/lidl_items.csv
-COPY scripts/ /build/scripts/
-RUN node scripts/parse-lidl.js && pnpm build
+RUN pnpm build
 
 # ── Stage 2: PocketBase runtime ────────────────────────────────────────────
 FROM alpine:latest

@@ -36,6 +36,8 @@ const MICRO_FIELDS = [
 
 const f2 = n => Number(n).toFixed(2);
 const ppg = f => f.price_kr / f.weight_g;
+const ppk = f => f.protein ? (f.protein * f.weight_g / 100) / f.price_kr : 0;
+const ppkc = f => f.kcal ? f.price_kr / (f.kcal * f.weight_g / 100) * 100 : 0;
 const rcost = (r,foods) => r.ings.reduce((s,i)=>{ const f=foods.find(x=>x.id===i.fid); return f?s+ppg(f)*i.g:s; },0);
 const rnut = (r,foods) => {
   const t={kc:0,pr:0,cb:0,fa:0};
@@ -228,6 +230,8 @@ export default function App(){
   const [loading,setLoading]=useState(true);
   const [plan,setPlan]=useState({});
   const [q,setQ]=useState("");
+  const [sortKey,setSortKey]=useState('ppg');
+  const [sortDir,setSortDir]=useState(1);
   const [showF,setShowF]=useState(false);
   const [editFood,setEditFood]=useState(null);
   const [showR,setShowR]=useState(false);
@@ -236,18 +240,29 @@ export default function App(){
   const [lidlPrefill,setLidlPrefill]=useState(null);
   const [showNutDetail,setShowNutDetail]=useState(false);
   const [showPlanNut,setShowPlanNut]=useState(false);
+  const planRecordsRef = useRef({});
 
   useEffect(() => {
     async function load() {
       try {
-        const [fs, rs] = await Promise.all([
+        const [fs, rs, planRecords] = await Promise.all([
           pb.collection('foods').getFullList({ sort: 'name' }),
           pb.collection('recipes').getFullList({
             expand: 'recipe_ingredients_via_recipe.food'
-          })
+          }),
+          pb.collection('meal_plan').getFullList()
         ])
         setFoods(fs)
         setRecipes(normaliseRecipes(rs))
+        const planMap = {};
+        const planRecs = {};
+        for (const r of planRecords) {
+          const key = `${r.day}-${r.meal_slot}`;
+          planMap[key] = r.recipe;
+          planRecs[key] = r;
+        }
+        setPlan(planMap);
+        planRecordsRef.current = planRecs;
       } catch (err) {
         console.error('Failed to load data:', err)
       } finally {
@@ -325,6 +340,29 @@ export default function App(){
       setFoods(p => p.filter(x => x.id !== id))
     } catch (err) {
       console.error('Failed to delete food:', err)
+      alert('Kunde inte ta bort varan. Den används troligen i ett recept.')
+    }
+  }
+
+  async function setPlanSlot(key, recipeId) {
+    const [day, ...rest] = key.split('-');
+    const meal_slot = rest.join('-');
+    const existing = planRecordsRef.current[key];
+    if (recipeId) {
+      if (existing) {
+        const updated = await pb.collection('meal_plan').update(existing.id, { recipe: recipeId });
+        planRecordsRef.current[key] = updated;
+      } else {
+        const created = await pb.collection('meal_plan').create({ week_start: "current", day, meal_slot, recipe: recipeId });
+        planRecordsRef.current[key] = created;
+      }
+      setPlan(p => ({ ...p, [key]: recipeId }));
+    } else {
+      if (existing) {
+        await pb.collection('meal_plan').delete(existing.id);
+        delete planRecordsRef.current[key];
+      }
+      setPlan(p => { const n = { ...p }; delete n[key]; return n; });
     }
   }
 
@@ -337,7 +375,27 @@ export default function App(){
     }
   }
 
-  const flist=useMemo(()=>foods.filter(f=>f.name.toLowerCase().includes(q.toLowerCase())||(f.store||"").toLowerCase().includes(q.toLowerCase())).sort((a,b)=>ppg(a)-ppg(b)),[foods,q]);
+  const SORT = {
+    name:  (a,b) => a.name.localeCompare(b.name),
+    store: (a,b) => (a.store||"").localeCompare(b.store||""),
+    cat:   (a,b) => (a.category||"").localeCompare(b.category||""),
+    wg:    (a,b) => a.weight_g - b.weight_g,
+    kr:    (a,b) => a.price_kr - b.price_kr,
+    ppg:   (a,b) => ppg(a) - ppg(b),
+    ppkc:  (a,b) => ppkc(a) - ppkc(b),
+    ppk:   (a,b) => ppk(b) - ppk(a),
+  };
+  function handleSort(key) {
+    setSortKey(prev => {
+      if (prev === key) { setSortDir(d => -d); return key; }
+      setSortDir(key === 'ppk' ? -1 : 1);
+      return key;
+    });
+  }
+  const flist=useMemo(()=>foods
+    .filter(f=>f.name.toLowerCase().includes(q.toLowerCase())||(f.store||"").toLowerCase().includes(q.toLowerCase()))
+    .sort((a,b)=>sortDir*(SORT[sortKey]?.(a,b)??0))
+  ,[foods,q,sortKey,sortDir]);
 
   const planned=useMemo(()=>Object.entries(plan).flatMap(([key,rid])=>{
     const r=recipes.find(x=>x.id===rid); if(!r) return [];
@@ -490,15 +548,20 @@ export default function App(){
                 <table style={{width:"100%",borderCollapse:"collapse",fontSize:13,minWidth:480}}>
                   <thead>
                     <tr style={{background:"#f0f9f0"}}>
-                      {["Vara","Butik","Kategori","Vikt","Pris","kr/100g",""].map(h=>(
-                        <th key={h} style={{padding:"10px 12px",textAlign:"left",fontSize:10,fontWeight:800,color:"#6b9a6b",textTransform:"uppercase",letterSpacing:"0.06em",whiteSpace:"nowrap"}}>{h}</th>
+                      {[["Vara","name"],["Butik","store"],["Kategori","cat"],["Vikt","wg"],["Pris","kr"],["kr/100g","ppg"],["kr/100kc","ppkc"],["g prot/kr","ppk"]].map(([h,k])=>(
+                        <th key={h} onClick={()=>handleSort(k)} style={{padding:"10px 12px",textAlign:"left",fontSize:10,fontWeight:800,color:sortKey===k?"#16a34a":"#6b9a6b",textTransform:"uppercase",letterSpacing:"0.06em",whiteSpace:"nowrap",cursor:"pointer",userSelect:"none"}}>
+                          {h}{sortKey===k?(sortDir===1?" ▲":" ▼"):""}
+                        </th>
                       ))}
+                      <th style={{padding:"10px 12px"}}></th>
                     </tr>
                   </thead>
                   <tbody>
-                    {flist.length===0&&<tr><td colSpan={7} style={{padding:28,textAlign:"center",color:"#9ab89a"}}>Inga varor hittades</td></tr>}
+                    {flist.length===0&&<tr><td colSpan={9} style={{padding:28,textAlign:"center",color:"#9ab89a"}}>Inga varor hittades</td></tr>}
                     {flist.map((food,i)=>{
                       const rate=ppg(food)*100;
+                      const prot=ppk(food);
+                      const kcrate=ppkc(food);
                       return (
                         <tr key={food.id} style={{borderTop:"1px solid #f0f4f0",background:i%2===0?"#fff":"#fafdf8"}}>
                           <td style={{padding:"10px 12px",fontWeight:700}}>{food.name}</td>
@@ -507,6 +570,12 @@ export default function App(){
                           <td style={{padding:"10px 12px",color:"#7aaa7a"}}>{food.weight_g}g</td>
                           <td style={{padding:"10px 12px"}}>{f2(food.price_kr)} kr</td>
                           <td style={{padding:"10px 12px",fontWeight:800,color:rate<5?"#16a34a":rate<20?"#ca8a04":"#dc2626"}}>{f2(rate)}</td>
+                          <td style={{padding:"10px 12px",fontWeight:800,color:kcrate>0?(kcrate<5?"#16a34a":kcrate<15?"#ca8a04":"#dc2626"):"#e5e7eb"}}>
+                            {kcrate>0?f2(kcrate):"—"}
+                          </td>
+                          <td style={{padding:"10px 12px",fontWeight:800,color:prot>0?(prot>=2?"#16a34a":prot>=1?"#ca8a04":"#9ab89a"):"#e5e7eb"}}>
+                            {prot>0?f2(prot):"—"}
+                          </td>
                           <td style={{padding:"10px 8px"}}>
                             <div style={{display:"flex",gap:4}}>
                               <button onClick={()=>{setEditFood(food);setShowF(true);}} style={{background:"none",border:"none",color:"#86b886",cursor:"pointer",fontSize:15,lineHeight:1,padding:"0 3px"}} title="Redigera">✏️</button>
@@ -646,7 +715,7 @@ export default function App(){
                         const n=recipe?rnut(recipe,foods):null;
                         return (
                           <td key={day} style={{padding:"7px 6px",verticalAlign:"top"}}>
-                            <select value={rid||""} onChange={e=>{const val=e.target.value;setPlan(p=>{const n={...p};if(val)n[key]=val;else delete n[key];return n;});}}
+                            <select value={rid||""} onChange={e => setPlanSlot(key, e.target.value)}
                               style={{width:"100%",border:"1.5px solid #d4ead4",borderRadius:8,padding:"6px 6px",background:"#f4fbf4",fontSize:12,color:"#1a3a1a",fontFamily:"inherit"}}>
                               <option value="">—</option>
                               {recipes.map(r=><option key={r.id} value={r.id}>{r.name}</option>)}
